@@ -28,20 +28,34 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractBaseUser, PermissionsMixin):
+    CANDIDATE = "candidate"
+    EMPLOYER = "employer"
+    USER_TYPES = [
+        (CANDIDATE, "Candidate"),
+        (EMPLOYER, "Employer"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True, db_index=True)
+
     first_name = models.CharField(max_length=120, blank=True)
     last_name = models.CharField(max_length=120, blank=True)
+
+    phone_number = models.CharField(max_length=20, blank=True)
+
+    user_type = models.CharField(max_length=20, choices=USER_TYPES, default=CANDIDATE)
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 
     date_joined = models.DateTimeField(auto_now_add=True)
 
+    profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
+
     objects = UserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = []  # email + password are required by default
+    REQUIRED_FIELDS = []  
 
     class Meta:
         verbose_name = "User"
@@ -54,3 +68,29 @@ class User(AbstractBaseUser, PermissionsMixin):
     def full_name(self):
         name = f"{self.first_name} {self.last_name}".strip()
         return name or self.email
+
+
+class JobSeekerProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="jobseeker_profile")
+    resume = models.FileField(upload_to="resumes/", null=True, blank=True)
+    skills = models.TextField(blank=True)  # comma-separated list
+    education = models.TextField(blank=True)
+    experience = models.TextField(blank=True)
+    expected_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    preferred_location = models.CharField(max_length=255, blank=True)
+
+    def __str__(self):
+        return f"JobSeekerProfile({self.user.email})"
+
+
+class EmployerProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="employer_profile")
+    company_name = models.CharField(max_length=255, blank=True)
+    company_description = models.TextField(blank=True)
+    company_website = models.URLField(blank=True)
+    company_size = models.CharField(max_length=100, blank=True)
+    industry = models.CharField(max_length=100, blank=True)
+    company_logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
+
+    def __str__(self):
+        return f"EmployerProfile({self.user.email})"
