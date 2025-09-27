@@ -7,10 +7,6 @@ from .utils import generate_otp
 OTP_EXPIRE_SECONDS = 300  # 5 minutes
 
 def send_otp_email(email: str, purpose: str):
-    """
-    Generate and send OTP to email.
-    Purpose: 'register' or 'reset'
-    """
     otp = generate_otp()
     cache_key = f"otp:{purpose}:{email}"
     cache.set(cache_key, otp, OTP_EXPIRE_SECONDS)
@@ -20,8 +16,7 @@ def send_otp_email(email: str, purpose: str):
     from_email = settings.DEFAULT_FROM_EMAIL
 
     send_mail(subject, message, from_email, [email])
-
-    return otp  # for debugging/testing
+    return otp
 
 
 def verify_otp(email: str, otp: str, purpose: str) -> bool:

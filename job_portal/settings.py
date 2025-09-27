@@ -29,6 +29,11 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 
+# Media files (user uploaded)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -38,9 +43,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    "django_filters",
     "rest_framework",
     "accounts",
     "jobs",
+    "posts",
 ]
 
 MIDDLEWARE = [
@@ -127,7 +134,7 @@ STATIC_URL = 'static/'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -144,9 +151,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/day",
         "user": "1000/day",
-        "otp": "5/min",      # will apply to /request-otp
-        "verify": "10/min",  # will apply to /verify-otp
+        "otp": "5/min",     
+        "verify": "10/min", 
+        "resend_otp": "5/min"
     },
+    "DEFAULT_FILTER_BACKENDS": [
+        'django_filters.rest_framework.DjangoFilterBackend',
+    ]
 }
 
 SIMPLE_JWT = {
@@ -164,7 +175,7 @@ DEFAULT_FROM_EMAIL = "no-reply@example.com"
 # EMAIL_USE_TLS = True
 
 # EMAIL_HOST_USER = "aabhijith2357@gmail.com"
-# EMAIL_HOST_PASSWORD = "vizl lcrr ehjd enln"
+# EMAIL_HOST_PASSWORD = "rwzm vqdh clkw kevv"
 # DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 CACHES = {
     "default": {
