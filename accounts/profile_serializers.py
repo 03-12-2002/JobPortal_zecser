@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import JobSeekerProfile, EmployerProfile, CompanyProfile, Follow
+from .models import JobSeekerProfile, EmployerProfile, CompanyProfile, Follow, Skill, Education, Experience
 
 class CompanyProfileSerializer(serializers.ModelSerializer):
 
@@ -24,50 +24,232 @@ class CompanyProfileSerializer(serializers.ModelSerializer):
             return Follow.objects.filter(follower=request.user, following_company=obj).exists()
         return False
 
+class SkillSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = Skill
+        fields = ['id', 'name']
+        read_only_fields = ['id']
+
+class EducationSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = Education
+        fields = ['id', 'degree', 'institution', 'period', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+class ExperienceSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = Experience
+        fields = ['id', 'title', 'company', 'description', 'period', 'start_date', 'end_date', 'is_current', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
 class JobSeekerProfileSerializer(serializers.ModelSerializer):
-    skills = serializers.ListField(
-        child=serializers.CharField(max_length=100),
-        required=False,
-        allow_empty=True,
-    )
-    experience = serializers.JSONField(required=False)  # ✅ Structured list
+    skills = SkillSerializer(many=True, read_only=True)
+    skills_input = serializers.ListField(child=serializers.CharField(), write_only=True, required=False)
+    educations = EducationSerializer(many=True, required=False)
+    experiences = ExperienceSerializer(many=True, required=False)
     resume = serializers.FileField(required=False, allow_null=True)
+    location = serializers.CharField(required=False, allow_blank=True)
+    bio = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = JobSeekerProfile
         fields = [
-            'resume', 'skills', 'education', 'experience',
-            'expected_salary', 'preferred_location'
+            'resume', 'skills', 'skills_input', 'educations', 'experiences',
+            'location', 'bio'
         ]
+        read_only_fields = ('skills',)
+    
+    def _get_or_create_skill(self, name):
+        name = str(name).strip()
+        if not name:
+            return None
+        # case-insensitive get_or_create
+        skill = Skill.objects.filter(name__iexact=name).first()
+        if not skill:
+            skill = Skill.objects.create(name=name)
+        else:
+            # normalize stored name (optional)
+            if skill.name != name:
+                skill.name = name
+                skill.save()
+        return skill
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
-        rep['skills'] = instance.skills.split(',') if instance.skills else []
+        # skills (read-only nested) are already handled by SkillSerializer
+        # Ensure educations and experiences serialized correctly
+        rep['educations'] = EducationSerializer(instance.educations.all(), many=True).data
+        rep['experiences'] = ExperienceSerializer(instance.experiences.all(), many=True).data
+        # Ensure skills shown as list of strings for convenience
+        rep['skills'] = [s.name for s in instance.skills.all()]
         return rep
+    
+    def _sync_skills(self, profile, skills_input):
+        """
+        Accepts skills_input as list of strings (already normalized).
+        Syncs profile.skills M2M to match provided list.
+        """
+        if skills_input is None:
+            return
 
-    def to_internal_value(self, data):
-        data = data.copy() if isinstance(data, dict) else dict(data)
+        # Allow comma-separated single string accidentally passed here (defensive)
+        if isinstance(skills_input, str):
+            skill_names = [s.strip() for s in skills_input.split(',') if s.strip()]
+        elif isinstance(skills_input, (list, tuple)):
+            skill_names = []
+            for item in skills_input:
+                if isinstance(item, dict):
+                    nm = item.get('name', '').strip()
+                else:
+                    nm = str(item).strip()
+                if nm:
+                    skill_names.append(nm)
+        else:
+            return
 
-        if 'skills' in data:
-            skills_val = data['skills']
-            if isinstance(skills_val, str):
-                data['skills'] = [s.strip() for s in skills_val.split(',') if s.strip()]
+        skill_objs = []
+        for name in skill_names:
+            skill = Skill.objects.filter(name__iexact=name).first()
+            if not skill:
+                skill = Skill.objects.create(name=name)
+            skill_objs.append(skill)
+        profile.skills.set(skill_objs)
 
-        return super().to_internal_value(data)
+    def _sync_educations(self, profile, educations_input):
+        """
+        Sync educations: update existing by id, create new ones; remove omitted ones.
+        """
+        if educations_input is None:
+            return
 
-    def _join_skills(self, skills_list):
-        return ','.join([s.strip() for s in skills_list if s and str(s).strip()])
+        # incoming ids
+        incoming_ids = [int(item.get('id')) for item in educations_input if isinstance(item, dict) and item.get('id')]
+
+        # delete those not present
+        existing_ids = [e.id for e in profile.educations.all()]
+        to_delete = [eid for eid in existing_ids if eid not in incoming_ids]
+        if to_delete:
+            profile.educations.filter(id__in=to_delete).delete()
+
+        # update/create
+        for item in educations_input:
+            if not isinstance(item, dict):
+                continue
+            eid = item.get('id', None)
+            if eid:
+                try:
+                    edu = profile.educations.get(id=eid)
+                    edu.degree = item.get('degree', edu.degree)
+                    edu.institution = item.get('institution', edu.institution)
+                    edu.period = item.get('period', edu.period)
+                    edu.save()
+                except Education.DoesNotExist:
+                    Education.objects.create(
+                        profile=profile,
+                        degree=item.get('degree', ''),
+                        institution=item.get('institution', ''),
+                        period=item.get('period', '')
+                    )
+            else:
+                Education.objects.create(
+                    profile=profile,
+                    degree=item.get('degree', ''),
+                    institution=item.get('institution', ''),
+                    period=item.get('period', '')
+                )
+
+    def _sync_experiences(self, profile, experiences_input):
+        """
+        Sync experiences similar to educations.
+        """
+        if experiences_input is None:
+            return
+
+        incoming_ids = [int(item.get('id')) for item in experiences_input if isinstance(item, dict) and item.get('id')]
+
+        existing_ids = [e.id for e in profile.experiences.all()]
+        to_delete = [eid for eid in existing_ids if eid not in incoming_ids]
+        if to_delete:
+            profile.experiences.filter(id__in=to_delete).delete()
+
+        for item in experiences_input:
+            if not isinstance(item, dict):
+                continue
+            eid = item.get('id', None)
+            if eid:
+                try:
+                    exp = profile.experiences.get(id=eid)
+                    exp.title = item.get('title', exp.title)
+                    exp.company = item.get('company', exp.company)
+                    exp.description = item.get('description', exp.description)
+                    exp.period = item.get('period', exp.period)
+                    if 'start_date' in item:
+                        exp.start_date = item.get('start_date')
+                    if 'end_date' in item:
+                        exp.end_date = item.get('end_date')
+                    if 'is_current' in item:
+                        exp.is_current = bool(item.get('is_current'))
+                    exp.save()
+                except Experience.DoesNotExist:
+                    Experience.objects.create(
+                        profile=profile,
+                        title=item.get('title', ''),
+                        company=item.get('company', ''),
+                        description=item.get('description', ''),
+                        period=item.get('period', ''),
+                        start_date=item.get('start_date', None),
+                        end_date=item.get('end_date', None),
+                        is_current=bool(item.get('is_current', False))
+                    )
+            else:
+                Experience.objects.create(
+                    profile=profile,
+                    title=item.get('title', ''),
+                    company=item.get('company', ''),
+                    description=item.get('description', ''),
+                    period=item.get('period', ''),
+                    start_date=item.get('start_date', None),
+                    end_date=item.get('end_date', None),
+                    is_current=bool(item.get('is_current', False))
+                )
     
     def create(self, validated_data):
-        skills_list = validated_data.pop('skills', None)
-        if skills_list is not None:
-            validated_data['skills'] = self._join_skills(skills_list)
-        return super().create(validated_data)
+        # Because JobSeekerProfile is created when user is created, create isn't typically used here
+        # But implement for completeness
+        skills_input = validated_data.pop('skills_input', None)
+        educations_input = validated_data.pop('educations', None)
+        experiences_input = validated_data.pop('experiences', None)
+
+        profile = super().create(validated_data)
+
+        self._sync_skills(profile, skills_input)
+        self._sync_educations(profile, educations_input)
+        self._sync_experiences(profile, experiences_input)
+
+        return profile
 
     def update(self, instance, validated_data):
-        skills_list = validated_data.pop('skills', None)
-        if skills_list is not None:
-            validated_data['skills'] = self._join_skills(skills_list)
-        return super().update(instance, validated_data)
+        skills_input = validated_data.pop('skills_input', None)
+        educations_input = validated_data.pop('educations', None)
+        experiences_input = validated_data.pop('experiences', None)
+
+        # Update scalar fields
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        instance.save()
+
+        # Sync lists if provided
+        self._sync_skills(instance, skills_input)
+        self._sync_educations(instance, educations_input)
+        self._sync_experiences(instance, experiences_input)
+
+        return instance
 
 class EmployerProfileSerializer(serializers.ModelSerializer):
     company = CompanyProfileSerializer(read_only=True)

@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.urls import reverse
 from .models import JobSeekerProfile, EmployerProfile, Follow, User
-from .profile_serializers import JobSeekerProfileSerializer, EmployerProfileSerializer
+from .profile_serializers import JobSeekerProfileSerializer, EmployerProfileSerializer, CompanyProfileSerializer
 
 User = get_user_model()
 
@@ -51,7 +51,6 @@ class SignupSerializer(serializers.ModelSerializer):
         if user.user_type == User.JOBSEEKER:
             JobSeekerProfile.objects.create(user=user)
         elif user.user_type == User.EMPLOYER:
-            
             EmployerProfile.objects.create(user=user)
 
         return user
@@ -188,39 +187,54 @@ class FullProfileSerializer(serializers.ModelSerializer):
 
     def get_following_count(self, obj):
         return Follow.objects.filter(follower=obj).count()
-
-    def update(self, instance, validated_data):
-        request = self.context.get("request")
+    
+    def _parse_profile_payload(self, request):
+        """
+        Collect profile data from request in a robust way:
+         - If request.data contains 'profile' as JSON/dict/string -> parse it
+         - Also accept top-level keys profile.* or direct keys for convenience
+         - Accept skills as comma string or list or list of dicts
+         - Accept education/educations and experience/experiences
+        Returns a dict suitable to pass as `data` to JobSeekerProfileSerializer / EmployerProfileSerializer
+        """
         profile_data = {}
+
         incoming_profile = request.data.get("profile", None)
 
-        # 1) If request includes top-level profile JSON string -> parse it
+        # If profile is a dict-like object (usually JSON), copy it
         if isinstance(incoming_profile, dict):
-            profile_data = incoming_profile.copy()
+            profile_data.update(incoming_profile)
         else:
             if incoming_profile:
                 try:
-                    profile_data = json.loads(incoming_profile)
+                    profile_data.update(json.loads(incoming_profile))
                 except Exception:
-                    profile_data = {}
+                    # leave as-is if not JSON
+                    pass
 
-            # 2) Collect individual profile.* form fields
-            for key, value in request.data.items():
-                if key.startswith("profile."):
-                    sub_key = key.split("profile.", 1)[1]
-                    profile_data[sub_key] = value
+        # Collect keys of form profile.X
+        for key, value in request.data.items():
+            if key.startswith("profile."):
+                sub_key = key.split("profile.", 1)[1]
+                profile_data[sub_key] = value
 
-        # 3) Collect files: both profile.* files and top-level file fields
+        # Also accept direct profile fields at top-level like 'skills', 'bio', etc.
+        simple_keys = ['skills', 'resume', 'location', 'bio', 'educations', 'education', 'experiences', 'experience', 'location']
+        for k in simple_keys:
+            if k in request.data and k not in profile_data:
+                profile_data[k] = request.data.get(k)
+
+        # Collect files
         if hasattr(request, "FILES") and request.FILES:
             for fkey, fval in request.FILES.items():
                 if fkey.startswith("profile."):
                     sub_key = fkey.split("profile.", 1)[1]
                     profile_data[sub_key] = fval
                 else:
-                    # top-level files such as profile_picture, cover_picture
+                    # e.g. resume, profile_picture, cover_picture
                     profile_data[fkey] = fval
 
-        # 4) Try to parse JSON-stringified nested values (e.g. arrays sent from frontend as JSON strings)
+        # Normalize JSON-stringified nested values
         for k, v in list(profile_data.items()):
             if isinstance(v, str):
                 v_strip = v.strip()
@@ -228,51 +242,87 @@ class FullProfileSerializer(serializers.ModelSerializer):
                     try:
                         profile_data[k] = json.loads(v_strip)
                     except Exception:
-                        # leave as string if JSON parse fails
                         profile_data[k] = v
 
-        # 5) Normalize skills: if it's a comma-separated string -> convert to list; if already list, keep it
-        if "skills" in profile_data:
-            skills_val = profile_data["skills"]
-            if isinstance(skills_val, str):
-                # comma separated string
-                profile_data["skills"] = [s.strip() for s in skills_val.split(",") if s.strip()]
-            elif isinstance(skills_val, (list, tuple)):
-                profile_data["skills"] = list(skills_val)
+        # Map 'education' -> 'educations' (support both)
+        if 'education' in profile_data and 'educations' not in profile_data:
+            # allow 'education' to be either string (legacy) or list (new)
+            if isinstance(profile_data['education'], (list, tuple)):
+                profile_data['educations'] = profile_data.pop('education')
+            else:
+                # single string - preserve in a legacy field 'education_text' (client may not use)
+                profile_data['educations'] = profile_data.pop('education')
 
-        # 6) Apply top-level file fields to the User instance before nested serializer
+        if 'experience' in profile_data and 'experiences' not in profile_data:
+            if isinstance(profile_data['experience'], (list, tuple)):
+                profile_data['experiences'] = profile_data.pop('experience')
+            else:
+                profile_data['experiences'] = profile_data.pop('experience')
+
+        # Normalize skills: allow comma-separated string or list
+        if 'skills' in profile_data:
+            skills_val = profile_data['skills']
+            if isinstance(skills_val, str):
+                profile_data['skills'] = [s.strip() for s in skills_val.split(',') if s.strip()]
+            elif isinstance(skills_val, (list, tuple)):
+                profile_data['skills'] = list(skills_val)
+        
+        # IMPORTANT: map 'skills' -> 'skills_input' for JobSeekerProfileSerializer write-field
+        if 'skills' in profile_data and 'skills_input' not in profile_data:
+            profile_data['skills_input'] = profile_data.pop('skills')
+
+        # Map 'location' to location for compatibility
+        # if 'location' in profile_data and 'location' not in profile_data:
+        #     profile_data['location'] = profile_data.pop('location')
+
+        return profile_data
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        profile_data = self._parse_profile_payload(request)
+
+        # Apply top-level files directly to user (profile_picture/cover_picture)
         if "profile_picture" in profile_data and profile_data["profile_picture"] is not None:
             instance.profile_picture = profile_data.pop("profile_picture")
         if "cover_picture" in profile_data and profile_data["cover_picture"] is not None:
             instance.cover_picture = profile_data.pop("cover_picture")
 
-        # 7) Update basic user fields from validated_data
+        # Basic user fields from validated_data or from raw request.data
         basic_fields = ["first_name", "last_name", "phone_number", "profile_picture", "cover_picture"]
         for field in basic_fields:
+            # prefer explicit validated_data if provided (e.g., JSON body) but also allow request.data
             if field in validated_data:
                 setattr(instance, field, validated_data[field])
+            elif field in request.data and field not in profile_data:
+                setattr(instance, field, request.data.get(field))
         instance.save()
 
-        # 8) Update nested jobseeker/employer profiles using their serializers (partial update)
-        if instance.user_type == User.JOBSEEKER and hasattr(instance, "jobseeker_profile"):
+        # Update nested profile data depending on user type
+        if instance.user_type == User.JOBSEEKER:
+            # ensure JobSeekerProfile exists
+            profile_obj, _ = JobSeekerProfile.objects.get_or_create(user=instance)
             profile_serializer = JobSeekerProfileSerializer(
-                instance.jobseeker_profile,
+                profile_obj,
                 data=profile_data,
                 partial=True,
                 context=self.context
             )
             profile_serializer.is_valid(raise_exception=True)
             profile_serializer.save()
-
-        elif instance.user_type == User.EMPLOYER and hasattr(instance, "employer_profile"):
-            profile_serializer = EmployerProfileSerializer(
-                instance.employer_profile,
+        elif instance.user_type == User.EMPLOYER:
+            # employer profile update (company handled separately)
+            try:
+                employer_profile = instance.employer_profile
+            except EmployerProfile.DoesNotExist:
+                employer_profile = EmployerProfile.objects.create(user=instance)
+            employer_serializer = EmployerProfileSerializer(
+                employer_profile,
                 data=profile_data,
                 partial=True,
                 context=self.context
             )
-            profile_serializer.is_valid(raise_exception=True)
-            profile_serializer.save()
+            employer_serializer.is_valid(raise_exception=True)
+            employer_serializer.save()
 
         return instance
     

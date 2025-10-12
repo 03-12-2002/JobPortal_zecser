@@ -62,8 +62,8 @@ class EmployerProfileAdmin(admin.ModelAdmin):
 
 @admin.register(JobSeekerProfile)
 class JobSeekerProfileAdmin(admin.ModelAdmin):
-    list_display = ('user_email', 'preferred_location')
-    search_fields = ('user__email', 'skills', 'preferred_location')
+    list_display = ('user_email', 'location')
+    search_fields = ('user__email', 'skills', 'location')
 
     def user_email(self, obj):
         return obj.user.email

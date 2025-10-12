@@ -91,21 +91,81 @@ class CompanyProfile(models.Model):
     def __str__(self):
         return self.company_name
 
+class Skill(models.Model):
+    """
+    A simple skill model. Skills are reusable and can be shared across users.
+    """
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
+    name = models.CharField(max_length=120, unique=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = "Skill"
+        verbose_name_plural = "Skills"
+
+    def __str__(self):
+        return self.name
 
 class JobSeekerProfile(models.Model):
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="jobseeker_profile")
     resume = models.FileField(upload_to="resumes/", null=True, blank=True)
-    skills = models.TextField(blank=True)
-    education = models.TextField(blank=True)
-    experience = models.JSONField(default=list, blank=True)  # ✅ Structured experience data
-    expected_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    preferred_location = models.CharField(max_length=255, blank=True)
+    skills = models.ManyToManyField(Skill, blank=True, related_name="jobseekers")
+    # education = models.TextField(blank=True)
+    # experience = models.JSONField(default=list, blank=True)  # ✅ Structured experience data
+    # expected_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    location = models.CharField(max_length=255, blank=True)
+    bio = models.TextField(blank=True)
 
     def __str__(self):
         return f"JobSeekerProfile({self.user.email})"
 
+class Education(models.Model):
+    """
+    Multiple education records per JobSeekerProfile.
+    Period is stored as a flexible string to allow different formats (2021 March - 2025 April, 2021-2025, etc.)
+    """
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
+    profile = models.ForeignKey(JobSeekerProfile, on_delete=models.CASCADE, related_name="educations")
+    degree = models.CharField(max_length=255)
+    institution = models.CharField(max_length=255, blank=True)
+    period = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Education"
+        verbose_name_plural = "Educations"
+
+    def __str__(self):
+        return f"{self.degree} @ {self.institution}"
+
+class Experience(models.Model):
+    """
+    Multiple experience records per JobSeekerProfile.
+    Period is a flexible string (supports Present).
+    """
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
+    profile = models.ForeignKey(JobSeekerProfile, on_delete=models.CASCADE, related_name="experiences")
+    title = models.CharField(max_length=255)
+    company = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    period = models.CharField(max_length=255, blank=True)  # flexible representation
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    is_current = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Experience"
+        verbose_name_plural = "Experiences"
+
+    def __str__(self):
+        return f"{self.title} @ {self.company}"
+        
 class EmployerProfile(models.Model):
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="employer_profile")
     company = models.ForeignKey(
         CompanyProfile,
