@@ -288,7 +288,7 @@ class FullProfileSerializer(serializers.ModelSerializer):
             instance.cover_picture = profile_data.pop("cover_picture")
 
         # Basic user fields from validated_data or from raw request.data
-        basic_fields = ["first_name", "last_name", "phone_number", "profile_picture", "cover_picture"]
+        basic_fields = ["first_name", "last_name", "phone_number", "profile_picture", "cover_picture", "email"]
         for field in basic_fields:
             # prefer explicit validated_data if provided (e.g., JSON body) but also allow request.data
             if field in validated_data:

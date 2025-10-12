@@ -21,6 +21,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 
 User = get_user_model()
+
 class RequestOTPView(generics.GenericAPIView):
     serializer_class = RequestOTPSerializer
     throttle_scope = "otp"  

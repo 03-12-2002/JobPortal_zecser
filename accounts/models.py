@@ -111,9 +111,6 @@ class JobSeekerProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="jobseeker_profile")
     resume = models.FileField(upload_to="resumes/", null=True, blank=True)
     skills = models.ManyToManyField(Skill, blank=True, related_name="jobseekers")
-    # education = models.TextField(blank=True)
-    # experience = models.JSONField(default=list, blank=True)  # ✅ Structured experience data
-    # expected_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     location = models.CharField(max_length=255, blank=True)
     bio = models.TextField(blank=True)
 
@@ -165,6 +162,11 @@ class Experience(models.Model):
         return f"{self.title} @ {self.company}"
         
 class EmployerProfile(models.Model):
+    """
+    Employer profile now supports the same editable fields as jobseeker profile,
+    except resume. This design duplicates education/experience tables for employers
+    so we can manage their records independently.
+    """
     id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="employer_profile")
     company = models.ForeignKey(
@@ -177,6 +179,11 @@ class EmployerProfile(models.Model):
     job_title = models.CharField(max_length=100, blank=True)
     is_company_admin = models.BooleanField(default=False)
 
+    # employer-specific fields similar to jobseeker (no resume)
+    skills = models.ManyToManyField(Skill, blank=True, related_name="employers")
+    location = models.CharField(max_length=255, blank=True)
+    bio = models.TextField(blank=True)
+
     def __str__(self):
         return f"{self.user.email} ({self.company.company_name if self.company else 'No Company'})"
 
@@ -184,6 +191,41 @@ class EmployerProfile(models.Model):
     def has_company(self):
         return self.company is not None
 
+class EmployerEducation(models.Model):
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
+    profile = models.ForeignKey(EmployerProfile, on_delete=models.CASCADE, related_name="educations")
+    degree = models.CharField(max_length=255)
+    institution = models.CharField(max_length=255, blank=True)
+    period = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Employer Education"
+        verbose_name_plural = "Employer Educations"
+
+    def __str__(self):
+        return f"{self.degree} @ {self.institution}"
+    
+class EmployerExperience(models.Model):
+    id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
+    profile = models.ForeignKey(EmployerProfile, on_delete=models.CASCADE, related_name="experiences")
+    title = models.CharField(max_length=255)
+    company = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    period = models.CharField(max_length=255, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    is_current = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Employer Experience"
+        verbose_name_plural = "Employer Experiences"
+
+    def __str__(self):
+        return f"{self.title} @ {self.company}"
 
 class Follow(models.Model):
     id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
@@ -225,4 +267,4 @@ class Follow(models.Model):
         if self.following_user:
             return f"{self.follower.email} follows {self.following_user.email}"
         else:
-            return f"{self.follower.email} follows {self.following_company.company_name}"
+            return f"{self.follower.email} follows {self.follower.email}"

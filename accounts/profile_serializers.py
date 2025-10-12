@@ -1,5 +1,9 @@
 from rest_framework import serializers
-from .models import JobSeekerProfile, EmployerProfile, CompanyProfile, Follow, Skill, Education, Experience
+from .models import (
+    JobSeekerProfile, EmployerProfile, CompanyProfile, 
+    Follow, Skill, Education, Experience,
+    EmployerEducation, EmployerExperience
+)
 
 class CompanyProfileSerializer(serializers.ModelSerializer):
 
@@ -23,7 +27,7 @@ class CompanyProfileSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return Follow.objects.filter(follower=request.user, following_company=obj).exists()
         return False
-
+    
 class SkillSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
@@ -251,7 +255,35 @@ class JobSeekerProfileSerializer(serializers.ModelSerializer):
 
         return instance
 
+class EmployerEducationSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = EmployerEducation
+        fields = ['id', 'degree', 'institution', 'period', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class EmployerExperienceSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = EmployerExperience
+        fields = ['id', 'title', 'company', 'description', 'period', 'start_date', 'end_date', 'is_current', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
 class EmployerProfileSerializer(serializers.ModelSerializer):
+
+    skills = SkillSerializer(many=True, read_only=True)
+    skills_input = serializers.ListField(child=serializers.CharField(), write_only=True, required=False)
+
+    educations = EmployerEducationSerializer(many=True, required=False)
+    experiences = EmployerExperienceSerializer(many=True, required=False)
+
+    location = serializers.CharField(required=False, allow_blank=True)
+    bio = serializers.CharField(required=False, allow_blank=True)
+    job_title = serializers.CharField(required=False, allow_blank=True)
+
     company = CompanyProfileSerializer(read_only=True)
     company_id = serializers.PrimaryKeyRelatedField(
         queryset=CompanyProfile.objects.all(),
@@ -264,11 +296,175 @@ class EmployerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmployerProfile
         fields = [
-            'company', 'company_id', 'job_title', 'is_company_admin'
+            'company', 'company_id', 'job_title', 'is_company_admin',
+            'skills', 'skills_input', 'educations', 'experiences',
+            'location', 'bio'
         ]
+        read_only_fields = ('skills',)
+
+    # reuse the same skill helper naming as jobseeker
+    def _get_or_create_skill(self, name):
+        name = str(name).strip()
+        if not name:
+            return None
+        skill = Skill.objects.filter(name__iexact=name).first()
+        if not skill:
+            skill = Skill.objects.create(name=name)
+        else:
+            if skill.name != name:
+                skill.name = name
+                skill.save()
+        return skill
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        # replace nested lists with serialized db entries
+        rep['educations'] = EmployerEducationSerializer(instance.educations.all(), many=True).data
+        rep['experiences'] = EmployerExperienceSerializer(instance.experiences.all(), many=True).data
+        rep['skills'] = [s.name for s in instance.skills.all()]
+        return rep
+
+    def _sync_skills(self, profile, skills_input):
+        if skills_input is None:
+            return
+        if isinstance(skills_input, str):
+            skill_names = [s.strip() for s in skills_input.split(',') if s.strip()]
+        elif isinstance(skills_input, (list, tuple)):
+            skill_names = []
+            for item in skills_input:
+                if isinstance(item, dict):
+                    nm = item.get('name', '').strip()
+                else:
+                    nm = str(item).strip()
+                if nm:
+                    skill_names.append(nm)
+        else:
+            return
+
+        skill_objs = []
+        for name in skill_names:
+            skill = Skill.objects.filter(name__iexact=name).first()
+            if not skill:
+                skill = Skill.objects.create(name=name)
+            skill_objs.append(skill)
+        profile.skills.set(skill_objs)
+
+    def _sync_educations(self, profile, educations_input):
+        if educations_input is None:
+            return
+        incoming_ids = [int(item.get('id')) for item in educations_input if isinstance(item, dict) and item.get('id')]
+        existing_ids = [e.id for e in profile.educations.all()]
+        to_delete = [eid for eid in existing_ids if eid not in incoming_ids]
+        if to_delete:
+            profile.educations.filter(id__in=to_delete).delete()
+
+        for item in educations_input:
+            if not isinstance(item, dict):
+                continue
+            eid = item.get('id', None)
+            if eid:
+                try:
+                    edu = profile.educations.get(id=eid)
+                    edu.degree = item.get('degree', edu.degree)
+                    edu.institution = item.get('institution', edu.institution)
+                    edu.period = item.get('period', edu.period)
+                    edu.save()
+                except EmployerEducation.DoesNotExist:
+                    EmployerEducation.objects.create(
+                        profile=profile,
+                        degree=item.get('degree', ''),
+                        institution=item.get('institution', ''),
+                        period=item.get('period', '')
+                    )
+            else:
+                EmployerEducation.objects.create(
+                    profile=profile,
+                    degree=item.get('degree', ''),
+                    institution=item.get('institution', ''),
+                    period=item.get('period', '')
+                )
+
+    def _sync_experiences(self, profile, experiences_input):
+        if experiences_input is None:
+            return
+        incoming_ids = [int(item.get('id')) for item in experiences_input if isinstance(item, dict) and item.get('id')]
+        existing_ids = [e.id for e in profile.experiences.all()]
+        to_delete = [eid for eid in existing_ids if eid not in incoming_ids]
+        if to_delete:
+            profile.experiences.filter(id__in=to_delete).delete()
+
+        for item in experiences_input:
+            if not isinstance(item, dict):
+                continue
+            eid = item.get('id', None)
+            if eid:
+                try:
+                    exp = profile.experiences.get(id=eid)
+                    exp.title = item.get('title', exp.title)
+                    exp.company = item.get('company', exp.company)
+                    exp.description = item.get('description', exp.description)
+                    exp.period = item.get('period', exp.period)
+                    if 'start_date' in item:
+                        exp.start_date = item.get('start_date')
+                    if 'end_date' in item:
+                        exp.end_date = item.get('end_date')
+                    if 'is_current' in item:
+                        exp.is_current = bool(item.get('is_current'))
+                    exp.save()
+                except EmployerExperience.DoesNotExist:
+                    EmployerExperience.objects.create(
+                        profile=profile,
+                        title=item.get('title', ''),
+                        company=item.get('company', ''),
+                        description=item.get('description', ''),
+                        period=item.get('period', ''),
+                        start_date=item.get('start_date', None),
+                        end_date=item.get('end_date', None),
+                        is_current=bool(item.get('is_current', False))
+                    )
+            else:
+                EmployerExperience.objects.create(
+                    profile=profile,
+                    title=item.get('title', ''),
+                    company=item.get('company', ''),
+                    description=item.get('description', ''),
+                    period=item.get('period', ''),
+                    start_date=item.get('start_date', None),
+                    end_date=item.get('end_date', None),
+                    is_current=bool(item.get('is_current', False))
+                )
+
+    def create(self, validated_data):
+        skills_input = validated_data.pop('skills_input', None)
+        educations_input = validated_data.pop('educations', None)
+        experiences_input = validated_data.pop('experiences', None)
+
+        profile = super().create(validated_data)
+
+        self._sync_skills(profile, skills_input)
+        self._sync_educations(profile, educations_input)
+        self._sync_experiences(profile, experiences_input)
+
+        return profile
+
+    def update(self, instance, validated_data):
+        skills_input = validated_data.pop('skills_input', None)
+        educations_input = validated_data.pop('educations', None)
+        experiences_input = validated_data.pop('experiences', None)
+
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        instance.save()
+
+        self._sync_skills(instance, skills_input)
+        self._sync_educations(instance, educations_input)
+        self._sync_experiences(instance, experiences_input)
+
+        return instance
 
 class CompanyCreateSerializer(serializers.ModelSerializer):
     make_me_admin = serializers.BooleanField(write_only=True, default=True, help_text="Make the requesting user a company admin.")
+    
     class Meta:
         model = CompanyProfile
         fields = [
