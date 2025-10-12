@@ -39,22 +39,22 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     first_name = models.CharField(max_length=120, blank=True)
     last_name = models.CharField(max_length=120, blank=True)
-
     phone_number = models.CharField(max_length=20, blank=True)
 
     user_type = models.CharField(max_length=20, choices=USER_TYPES, default=JOBSEEKER)
 
+    # ✅ Media Fields
+    profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
+    cover_picture = models.ImageField(upload_to="covers/", blank=True, null=True)
+
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
-
     date_joined = models.DateTimeField(auto_now_add=True)
-
-    profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
 
     objects = UserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = []  
+    REQUIRED_FIELDS = []
 
     class Meta:
         verbose_name = "User"
@@ -67,6 +67,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     def full_name(self):
         name = f"{self.first_name} {self.last_name}".strip()
         return name or self.email
+
 
 class CompanyProfile(models.Model):
     id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
@@ -90,12 +91,13 @@ class CompanyProfile(models.Model):
     def __str__(self):
         return self.company_name
 
+
 class JobSeekerProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="jobseeker_profile")
     resume = models.FileField(upload_to="resumes/", null=True, blank=True)
-    skills = models.TextField(blank=True) 
+    skills = models.TextField(blank=True)
     education = models.TextField(blank=True)
-    experience = models.TextField(blank=True)
+    experience = models.JSONField(default=list, blank=True)  # ✅ Structured experience data
     expected_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     preferred_location = models.CharField(max_length=255, blank=True)
 
@@ -106,22 +108,22 @@ class JobSeekerProfile(models.Model):
 class EmployerProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="employer_profile")
     company = models.ForeignKey(
-        CompanyProfile, 
-        on_delete=models.CASCADE, 
-        related_name="employers", 
-        null=True, 
+        CompanyProfile,
+        on_delete=models.CASCADE,
+        related_name="employers",
+        null=True,
         blank=True
     )
     job_title = models.CharField(max_length=100, blank=True)
     is_company_admin = models.BooleanField(default=False)
 
-
     def __str__(self):
         return f"{self.user.email} ({self.company.company_name if self.company else 'No Company'})"
-    
+
     @property
     def has_company(self):
         return self.company is not None
+
 
 class Follow(models.Model):
     id = models.AutoField(primary_key=True, validators=[MaxValueValidator(999999)], editable=False)
@@ -148,14 +150,8 @@ class Follow(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["follower", "following_user"],
-                name="unique_user_follow"
-            ),
-            models.UniqueConstraint(
-                fields=["follower", "following_company"],
-                name="unique_company_follow"
-            ),
+            models.UniqueConstraint(fields=["follower", "following_user"], name="unique_user_follow"),
+            models.UniqueConstraint(fields=["follower", "following_company"], name="unique_company_follow"),
             models.CheckConstraint(
                 check=(
                     (models.Q(following_user__isnull=False) & models.Q(following_company__isnull=True)) |
@@ -164,6 +160,7 @@ class Follow(models.Model):
                 name="follow_xor_check"
             ),
         ]
+
     def __str__(self):
         if self.following_user:
             return f"{self.follower.email} follows {self.following_user.email}"

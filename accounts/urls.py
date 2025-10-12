@@ -1,9 +1,9 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import RequestOTPView, VerifyOTPView, SignupView, LoginView, ResetPasswordView, ProfileView, UserPublicProfileView, CompanyViewSet, MyCompanyView, ChangePasswordView, ResendOTPView
-from .follow_views import FollowCreateView, UnfollowView
-from .views import UserFollowersListView, UserFollowingUsersListView, UserFollowingCompaniesListView, UserListView
-
+from .views import *
+from .follow_views import *
+from .views import *
+from rest_framework_simplejwt.views import TokenRefreshView
 
 router = DefaultRouter()
 router.register(r'companies', CompanyViewSet, basename='company')
@@ -17,6 +17,7 @@ urlpatterns = [
     path("auth/reset-password/", ResetPasswordView.as_view(), name="reset-password"),
     path("auth/change-password/", ChangePasswordView.as_view(), name="change-password"),
     path("profile/", ProfileView.as_view(), name="profile"),
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("profile/<int:id>/", UserPublicProfileView.as_view(), name="user-profile-detail"),
     path("profile/<int:id>/followers/", UserFollowersListView.as_view(), name='user-followers'),
     path("profile/<int:id>/following/users/", UserFollowingUsersListView.as_view(), name='user-following-users'),
@@ -27,4 +28,5 @@ urlpatterns = [
     path("unfollow/user/<int:user_id>/", UnfollowView.as_view(), name="unfollow-user"),
     path("unfollow/company/<int:company_id>/", UnfollowView.as_view(), name="unfollow-company"),
     path("users/", UserListView.as_view(), name="user-list"),
+    path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]

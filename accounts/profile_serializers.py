@@ -30,7 +30,8 @@ class JobSeekerProfileSerializer(serializers.ModelSerializer):
         required=False,
         allow_empty=True,
     )
-
+    experience = serializers.JSONField(required=False)  # ✅ Structured list
+    resume = serializers.FileField(required=False, allow_null=True)
     class Meta:
         model = JobSeekerProfile
         fields = [
@@ -66,9 +67,7 @@ class JobSeekerProfileSerializer(serializers.ModelSerializer):
         skills_list = validated_data.pop('skills', None)
         if skills_list is not None:
             validated_data['skills'] = self._join_skills(skills_list)
-
         return super().update(instance, validated_data)
-
 
 class EmployerProfileSerializer(serializers.ModelSerializer):
     company = CompanyProfileSerializer(read_only=True)

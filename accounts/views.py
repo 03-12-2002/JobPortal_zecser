@@ -128,12 +128,24 @@ class ResetPasswordView(generics.GenericAPIView):
         return Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)
     
 class ProfileView(generics.RetrieveUpdateAPIView):
+    """
+    Handles fetching and updating the authenticated user's full profile.
+    Supports multipart for file uploads (profile/cover/resume).
+    """
     permission_classes = [IsAuthenticated]
     serializer_class = FullProfileSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_object(self):
         return self.request.user
+
+    def put(self, request, *args, **kwargs):
+        """Handle profile picture, cover picture, resume uploads with JSON fields."""
+        user = self.get_object()
+        serializer = self.get_serializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class UserPublicProfileView(generics.RetrieveAPIView):
@@ -282,3 +294,20 @@ class UserListView(generics.ListAPIView):
 
     def get_queryset(self):
         return User.objects.filter(is_superuser=False).exclude(id=self.request.user.id)
+
+class LogoutView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            refresh_token = request.data.get("refresh")
+            if not refresh_token:
+                return Response({"error": "Refresh token is required."}, status=400)
+
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+
+            return Response({"message": "Successfully logged out."}, status=200)
+
+        except Exception:
+            return Response({"error": "Invalid token or already logged out."}, status=400)

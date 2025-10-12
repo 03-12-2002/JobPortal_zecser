@@ -1,3 +1,4 @@
+import json
 from rest_framework import serializers
 from django.contrib.auth import get_user_model, authenticate
 from django.core.cache import cache
@@ -9,17 +10,14 @@ from .profile_serializers import JobSeekerProfileSerializer, EmployerProfileSeri
 
 User = get_user_model()
 
-
 class RequestOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
     purpose = serializers.ChoiceField(choices=["register", "reset"])
-
 
 class VerifyOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
     purpose = serializers.ChoiceField(choices=["register", "reset"])
     otp = serializers.CharField(max_length=6)
-
 
 class SignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)
@@ -58,7 +56,6 @@ class SignupSerializer(serializers.ModelSerializer):
 
         return user
 
-
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
@@ -67,7 +64,13 @@ class LoginSerializer(serializers.Serializer):
         email = attrs.get("email")
         password = attrs.get("password")
 
-        user = authenticate(request=self.context.get("request"), email=email, password=password)
+        # ✅ now authenticate using email
+        user = authenticate(
+            request=self.context.get("request"),
+            username=email,
+            password=password
+        )
+
         if not user:
             raise serializers.ValidationError("Invalid email or password.")
 
@@ -91,10 +94,7 @@ class LoginSerializer(serializers.Serializer):
             },
             "refresh": str(refresh),
             "access": str(refresh.access_token),
-            "profile_url": reverse("profile"),
-            "public_profile_url": reverse("user-profile-detail", kwargs={"id": user.id}),
         }
-
 
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -140,7 +140,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = (
             "id", "email", "first_name", "last_name",
             "phone_number", "user_type", "user_type_display",
-            "date_joined", "profile_picture",
+            "date_joined", "profile_picture", "cover_picture",
             "follower_count", "following_count", "is_following"
         )
         read_only_fields = ("id", "email", "date_joined", "user_type_display")
@@ -161,83 +161,99 @@ class FullProfileSerializer(serializers.ModelSerializer):
     profile = serializers.SerializerMethodField()
     user_type_display = serializers.CharField(source="get_user_type_display", read_only=True)
     profile_picture = serializers.ImageField(required=False, allow_null=True)
+    cover_picture = serializers.ImageField(required=False, allow_null=True)
     followers_count = serializers.SerializerMethodField(read_only=True)
     following_count = serializers.SerializerMethodField(read_only=True)
-    follower_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = User
-        fields = (
-            "id", "email", "first_name", "last_name", "phone_number",
-            "user_type", "user_type_display", "profile_picture", "date_joined",
-            "profile", "followers_count", "following_count", "follower_count"
-        )
+        fields = [
+            "id", "email", "first_name", "last_name",
+            "phone_number", "user_type", "user_type_display",
+            "profile_picture", "cover_picture",
+            "profile", "followers_count", "following_count"
+        ]
         read_only_fields = ("id", "email", "date_joined", "user_type_display")
 
     def get_profile(self, obj):
+        request = self.context.get("request")
         if obj.user_type == User.JOBSEEKER and hasattr(obj, "jobseeker_profile"):
-            return JobSeekerProfileSerializer(obj.jobseeker_profile).data
+            return JobSeekerProfileSerializer(obj.jobseeker_profile, context={"request": request}).data
         elif obj.user_type == User.EMPLOYER and hasattr(obj, "employer_profile"):
-            return EmployerProfileSerializer(obj.employer_profile).data
-        return {}
-    
+            return EmployerProfileSerializer(obj.employer_profile, context={"request": request}).data
+        return None
+
     def get_followers_count(self, obj):
         return Follow.objects.filter(following_user=obj).count()
 
     def get_following_count(self, obj):
         return Follow.objects.filter(follower=obj).count()
-    
-    def get_follower_count(self, obj):
-        return self.get_followers_count(obj)
 
     def update(self, instance, validated_data):
         request = self.context.get("request")
         profile_data = {}
         incoming_profile = request.data.get("profile", None)
 
+        # 1) If request includes top-level profile JSON string -> parse it
         if isinstance(incoming_profile, dict):
             profile_data = incoming_profile.copy()
         else:
-            
             if incoming_profile:
                 try:
-                    import json
                     profile_data = json.loads(incoming_profile)
                 except Exception:
                     profile_data = {}
 
+            # 2) Collect individual profile.* form fields
             for key, value in request.data.items():
                 if key.startswith("profile."):
                     sub_key = key.split("profile.", 1)[1]
                     profile_data[sub_key] = value
 
-            profile_fields = []
-            if instance.user_type == User.JOBSEEKER:
-                profile_fields = JobSeekerProfileSerializer.Meta.fields
-            elif instance.user_type == User.EMPLOYER:
-                profile_fields = EmployerProfileSerializer.Meta.fields
-
-            for key, value in request.data.items():
-                if key in profile_fields:
-                    profile_data[key] = value
-
+        # 3) Collect files: both profile.* files and top-level file fields
         if hasattr(request, "FILES") and request.FILES:
             for fkey, fval in request.FILES.items():
                 if fkey.startswith("profile."):
                     sub_key = fkey.split("profile.", 1)[1]
                     profile_data[sub_key] = fval
                 else:
+                    # top-level files such as profile_picture, cover_picture
                     profile_data[fkey] = fval
 
-        if "skills" in profile_data and isinstance(profile_data["skills"], str):
-            profile_data["skills"] = [s.strip() for s in profile_data["skills"].split(",") if s.strip()]
+        # 4) Try to parse JSON-stringified nested values (e.g. arrays sent from frontend as JSON strings)
+        for k, v in list(profile_data.items()):
+            if isinstance(v, str):
+                v_strip = v.strip()
+                if (v_strip.startswith("{") and v_strip.endswith("}")) or (v_strip.startswith("[") and v_strip.endswith("]")):
+                    try:
+                        profile_data[k] = json.loads(v_strip)
+                    except Exception:
+                        # leave as string if JSON parse fails
+                        profile_data[k] = v
 
-        basic_fields = ["first_name", "last_name", "phone_number", "profile_picture"]
+        # 5) Normalize skills: if it's a comma-separated string -> convert to list; if already list, keep it
+        if "skills" in profile_data:
+            skills_val = profile_data["skills"]
+            if isinstance(skills_val, str):
+                # comma separated string
+                profile_data["skills"] = [s.strip() for s in skills_val.split(",") if s.strip()]
+            elif isinstance(skills_val, (list, tuple)):
+                profile_data["skills"] = list(skills_val)
+
+        # 6) Apply top-level file fields to the User instance before nested serializer
+        if "profile_picture" in profile_data and profile_data["profile_picture"] is not None:
+            instance.profile_picture = profile_data.pop("profile_picture")
+        if "cover_picture" in profile_data and profile_data["cover_picture"] is not None:
+            instance.cover_picture = profile_data.pop("cover_picture")
+
+        # 7) Update basic user fields from validated_data
+        basic_fields = ["first_name", "last_name", "phone_number", "profile_picture", "cover_picture"]
         for field in basic_fields:
             if field in validated_data:
                 setattr(instance, field, validated_data[field])
         instance.save()
 
+        # 8) Update nested jobseeker/employer profiles using their serializers (partial update)
         if instance.user_type == User.JOBSEEKER and hasattr(instance, "jobseeker_profile"):
             profile_serializer = JobSeekerProfileSerializer(
                 instance.jobseeker_profile,
